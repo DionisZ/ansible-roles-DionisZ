@@ -1,0 +1,128 @@
+---
+- name: Download NodeSource setup script
+  ansible.builtin.get_url:
+    url: https://deb.nodesource.com/setup_22.x
+    dest: /tmp/nodesource_setup.sh
+    mode: '0755'
+
+- name: Add NodeSource repository
+  ansible.builtin.command:
+    cmd: /tmp/nodesource_setup.sh
+    creates: /etc/apt/sources.list.d/nodesource.list
+
+- name: Install web server packages
+  ansible.builtin.apt:
+    name:
+      - apache2
+      - libapache2-mod-php
+      - php
+      - php-cli
+      - php-curl
+      - php-mbstring
+      - php-pgsql
+      - php-xml
+      - php-zip
+      - php-bcmath
+      - composer
+      - nodejs
+      - git
+      - unzip
+    state: present
+    update_cache: yes
+
+- name: Clone Laravel application
+  ansible.builtin.git:
+    repo: https://github.com/Practical-DevOps/app-for-devops.git
+    dest: /var/www/app-for-devops
+    force: yes
+
+- name: Create Laravel environment file
+  ansible.builtin.copy:
+    src: /var/www/app-for-devops/.env.example
+    dest: /var/www/app-for-devops/.env
+    remote_src: yes
+
+- name: Configure Laravel database
+  ansible.builtin.lineinfile:
+    path: /var/www/app-for-devops/.env
+    regexp: '^{{ item.key }}='
+    line: '{{ item.key }}={{ item.value }}'
+  loop:
+    - { key: 'APP_URL', value: 'http://localhost' }
+    - { key: 'DB_CONNECTION', value: 'pgsql' }
+    - { key: 'DB_HOST', value: "{{ db_host }}" }
+    - { key: 'DB_PORT', value: '5432' }
+    - { key: 'DB_DATABASE', value: "{{ db_name }}" }
+    - { key: 'DB_USERNAME', value: "{{ db_user }}" }
+    - { key: 'DB_PASSWORD', value: "{{ db_pass }}" }
+  no_log: yes
+
+- name: Install PHP dependencies
+  ansible.builtin.command:
+    cmd: composer install --no-interaction --prefer-dist
+    chdir: /var/www/app-for-devops
+  environment:
+    COMPOSER_ALLOW_SUPERUSER: '1'
+
+- name: Generate Laravel application key
+  ansible.builtin.command:
+    cmd: php artisan key:generate --force
+    chdir: /var/www/app-for-devops
+
+- name: Run database migrations
+  ansible.builtin.command:
+    cmd: php artisan migrate --force
+    chdir: /var/www/app-for-devops
+
+- name: Install frontend dependencies
+  ansible.builtin.command:
+    cmd: npm install
+    chdir: /var/www/app-for-devops
+
+- name: Build frontend assets
+  ansible.builtin.command:
+    cmd: npm run build
+    chdir: /var/www/app-for-devops
+
+- name: Set application ownership
+  ansible.builtin.file:
+    path: /var/www/app-for-devops
+    owner: www-data
+    group: www-data
+    recurse: yes
+
+- name: Enable Apache rewrite module
+  ansible.builtin.command:
+    cmd: a2enmod rewrite
+  changed_when: false
+
+- name: Create Apache virtual host
+  ansible.builtin.copy:
+    dest: /etc/apache2/sites-available/app.conf
+    content: |
+      <VirtualHost *:80>
+          ServerName localhost
+          DocumentRoot /var/www/app-for-devops/public
+
+          <Directory /var/www/app-for-devops/public>
+              AllowOverride All
+              Require all granted
+          </Directory>
+      </VirtualHost>
+  notify: Restart Apache
+
+- name: Disable default Apache site
+  ansible.builtin.command:
+    cmd: a2dissite 000-default
+  changed_when: false
+
+- name: Enable Laravel Apache site
+  ansible.builtin.command:
+    cmd: a2ensite app
+  changed_when: false
+
+- name: Start Apache
+  ansible.builtin.service:
+    name: apache2
+    state: started
+    enabled: yes

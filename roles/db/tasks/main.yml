@@ -1,0 +1,50 @@
+---
+- name: Install PostgreSQL packages
+  ansible.builtin.apt:
+    name:
+      - postgresql
+      - python3-psycopg2
+    state: present
+    update_cache: yes
+
+- name: Start PostgreSQL
+  ansible.builtin.service:
+    name: postgresql
+    state: started
+    enabled: yes
+
+- name: Create application database user
+  community.postgresql.postgresql_user:
+    name: "{{ db_user }}"
+    password: "{{ db_pass }}"
+    state: present
+  become_user: postgres
+  no_log: yes
+
+- name: Create application database
+  community.postgresql.postgresql_db:
+    name: "{{ db_name }}"
+    owner: "{{ db_user }}"
+    state: present
+  become_user: postgres
+
+- name: Allow PostgreSQL to listen on all interfaces
+  community.postgresql.postgresql_set:
+    name: listen_addresses
+    value: "*"
+  become_user: postgres
+  notify: Restart PostgreSQL
+
+- name: Find pg_hba.conf
+  ansible.builtin.find:
+    paths: /etc/postgresql
+    patterns: pg_hba.conf
+    recurse: yes
+  register: pg_hba
+
+- name: Allow remote PostgreSQL connections
+  ansible.builtin.lineinfile:
+    path: "{{ pg_hba.files[0].path }}"
+    line: "host all all 0.0.0.0/0 scram-sha-256"
+    state: present
+  notify: Restart PostgreSQL
